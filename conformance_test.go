@@ -786,6 +786,9 @@ func TestConformance(t *testing.T) {
 		if job.Status != 202 {
 			t.Fatalf("POST /jobs = %d %s", job.Status, job.Text())
 		}
+		if created := job.Map(t); created["cached"] != false || created["creditCost"] != float64(1) {
+			t.Fatalf("job reports cached=%v creditCost=%v, want false/1", created["cached"], created["creditCost"])
+		}
 		// The debit lands at creation time, before the worker ever sees the job.
 		if atCreate := s.balance(t); atCreate != before-1 {
 			t.Fatalf("balance after creation = %v, want %v", atCreate, before-1)
@@ -817,9 +820,18 @@ func TestConformance(t *testing.T) {
 		if second.Status != 200 {
 			t.Fatalf("second POST /jobs = %d, want 200 (a cache hit, not 202)", second.Status)
 		}
-		status, _ := second.Map(t)["status"].(map[string]any)
+		body := second.Map(t)
+		status, _ := body["status"].(map[string]any)
 		if status["state"] != "succeeded" {
 			t.Fatalf("cached status = %v", status)
+		}
+		if body["cached"] != true || body["creditCost"] != float64(0) {
+			t.Fatalf("cached job reports cached=%v creditCost=%v", body["cached"], body["creditCost"])
+		}
+		// A cache hit records its OWN job row, so the id is new and only the
+		// result is shared. Never assert the two ids match.
+		if body["jobId"] == first.Map(t)["jobId"] {
+			t.Fatal("a cache hit must name a new job id, not the cached job's")
 		}
 		if status["outputAssetId"] != outputAssetID {
 			t.Fatalf("cached outputAssetId = %v, want %v", status["outputAssetId"], outputAssetID)
@@ -833,7 +845,7 @@ func TestConformance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !created.Cached || created.Status.State != JobSucceeded {
+		if !created.Cached || created.Status.State != JobSucceeded || created.CreditCost != 0 {
 			t.Fatalf("sdk created = %+v", created)
 		}
 	})
@@ -1393,6 +1405,127 @@ func TestConformance(t *testing.T) {
 		// The SDK surfaces it as ErrNotFound.
 		if _, err := s.sdk.GetJob(context.Background(), "00000000-0000-4000-8000-000000000000"); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("sdk err = %v, want not_found", err)
+		}
+	})
+
+	/* ---------------- usage ---------------- */
+
+	s.scenario(t, "usage.query", func(t *testing.T) {
+		ctx := context.Background()
+
+		// One paid job and one free one, on bytes nobody has submitted
+		// before: a cache hit would be free and would not move credits.
+		paid, err := s.sdk.CreateJob(ctx, OpUpscale, FromAsset(s.uniqueUpload(t, "usage-paid")), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state := s.poll(t, paid.JobID)["state"]; state != "succeeded" {
+			t.Fatalf("paid job state = %v", state)
+		}
+		free, err := s.sdk.CreateJob(ctx, OpResizeImage, FromAsset(s.uniqueUpload(t, "usage-free")),
+			&CreateJobOptions{Params: ResizeImageParams{Width: 4}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state := s.poll(t, free.JobID)["state"]; state != "succeeded" {
+			t.Fatalf("free job state = %v", state)
+		}
+
+		report, err := s.sdk.GetUsage(ctx, &UsageQuery{GroupBy: GroupByOperation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.GroupBy != GroupByOperation {
+			t.Fatalf("groupBy = %q", report.GroupBy)
+		}
+		for name, value := range map[string]string{"from": report.Range.From, "to": report.Range.To} {
+			if _, err := time.Parse(time.RFC3339, value); err != nil {
+				t.Fatalf("range.%s = %q is not an ISO timestamp: %v", name, value, err)
+			}
+		}
+
+		// Every scenario shares one seeded account, so these are lower bounds.
+		if report.Totals.Jobs < 2 || report.Totals.Credits < 2 || report.Totals.Free < 1 {
+			t.Fatalf("totals = %+v, want jobs>=2 credits>=2 free>=1", report.Totals)
+		}
+		for name, value := range map[string]int{
+			"cacheHits":      report.Totals.CacheHits,
+			"failed":         report.Totals.Failed,
+			"delivered":      report.Totals.Delivered,
+			"deliveryFailed": report.Totals.DeliveryFailed,
+			"sessions":       report.Totals.Sessions,
+			"activeSessions": report.Totals.ActiveSessions,
+		} {
+			if value < 0 {
+				t.Fatalf("totals.%s = %d, want a non-negative integer", name, value)
+			}
+		}
+
+		upscale := report.Point(string(OpUpscale))
+		resize := report.Point(string(OpResizeImage))
+		if upscale == nil || resize == nil {
+			t.Fatalf("series has no upscale/resize-image bucket: %+v", report.Series)
+		}
+		// A per-operation bucket's credits is jobs x cost, so with N upscales
+		// the honest assertion is "a multiple of 2, at least 2".
+		if upscale.Credits < 2 || upscale.Credits%2 != 0 {
+			t.Fatalf("upscale credits = %d, want a multiple of 2 that is at least 2", upscale.Credits)
+		}
+		if resize.Credits != 0 {
+			t.Fatalf("resize-image credits = %d, want 0 (it is free)", resize.Credits)
+		}
+		for _, point := range report.Series {
+			if point.Key == "" || point.Label == "" {
+				t.Fatalf("series entry has no key/label: %+v", point)
+			}
+			if point.Jobs < 0 || point.Sessions < 0 {
+				t.Fatalf("series entry has negative counters: %+v", point)
+			}
+		}
+
+		// The cap gauge — an sk_ caller sees every live key on the account.
+		if len(report.Keys) < 2 {
+			t.Fatalf("keys = %+v, want at least the seeded secret and publishable key", report.Keys)
+		}
+		for _, key := range report.Keys {
+			if key.ID == "" || key.Name == "" {
+				t.Fatalf("key row = %+v", key)
+			}
+			if key.Kind != KeySecret && key.Kind != KeyPublishable {
+				t.Fatalf("key kind = %q", key.Kind)
+			}
+			if key.UsedToday < 0 {
+				t.Fatalf("key %s usedToday = %d", key.ID, key.UsedToday)
+			}
+		}
+
+		byDay, err := s.sdk.GetUsage(ctx, &UsageQuery{GroupBy: GroupByDay})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if byDay.GroupBy != GroupByDay {
+			t.Fatalf("groupBy = %q", byDay.GroupBy)
+		}
+		today := time.Now().UTC().Format("2006-01-02")
+		if byDay.Point(today) == nil {
+			t.Fatalf("the day series has no bucket for %s", today)
+		}
+
+		// No credential is a 401, and a backwards range a 400.
+		unauthorized := s.anon.get(t, "/usage")
+		if unauthorized.Status != 401 || unauthorized.ErrorCode(t) != "unauthorized" {
+			t.Fatalf("anonymous GET /usage = %d %s", unauthorized.Status, unauthorized.Text())
+		}
+		backwards := s.api.get(t, "/usage?from=2026-09-13&to=2026-09-01")
+		if backwards.Status != 400 || backwards.ErrorCode(t) != "invalid_input" {
+			t.Fatalf("backwards range = %d %s", backwards.Status, backwards.Text())
+		}
+		_, err = s.sdk.GetUsage(ctx, &UsageQuery{
+			From: time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC),
+			To:   time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		})
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("sdk backwards range err = %v, want invalid_input", err)
 		}
 	})
 

@@ -20,7 +20,7 @@ import (
 const DefaultBaseURL = "https://snapnedit.com/api"
 
 // Version is this SDK's version, sent in the User-Agent header.
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 // maskParamKey is the params key mask-guided operations read their mask from.
 // It is pipeline plumbing rather than part of any operation's schema.

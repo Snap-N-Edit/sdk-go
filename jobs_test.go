@@ -460,3 +460,69 @@ func TestUploadRunsAllThreeSteps(t *testing.T) {
 		t.Fatalf("calls = %v, want %v", seen, want)
 	}
 }
+
+func TestJobBillingFieldsAreParsedFromBothShapes(t *testing.T) {
+	mux := &jobsMux{
+		t: t,
+		createResponse: map[string]any{
+			"jobId":        "job-1",
+			"status":       map[string]any{"state": "queued"},
+			"input":        map[string]string{"kind": "asset"},
+			"destination":  nil,
+			"delivery":     nil,
+			"creditCost":   2,
+			"cached":       false,
+			"deliveryOnly": false,
+		},
+		job: map[string]any{
+			"state":         "succeeded",
+			"outputAssetId": "out-1",
+			"download":      nil,
+			"input":         map[string]string{"kind": "asset"},
+			"destination":   nil,
+			"delivery":      nil,
+			"creditCost":    0,
+			"cached":        true,
+			"deliveryOnly":  true,
+		},
+	}
+	client := testClient(t, mux)
+	ctx := context.Background()
+
+	created, err := client.CreateJob(ctx, OpUpscale, FromAsset("asset-1"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.CreditCost != 2 || created.Cached || created.DeliveryOnly {
+		t.Fatalf("created = %+v", created)
+	}
+	if job := created.Job(); job.CreditCost != 2 || job.Cached {
+		t.Fatalf("created.Job() = %+v", job)
+	}
+
+	job, err := client.GetJob(ctx, "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.CreditCost != 0 || !job.Cached || !job.DeliveryOnly {
+		t.Fatalf("job = %+v", job)
+	}
+}
+
+func TestA200IsACacheHitEvenWithoutTheFlag(t *testing.T) {
+	mux := &jobsMux{
+		t:            t,
+		createStatus: 200,
+		createResponse: map[string]any{
+			"jobId":  "job-2",
+			"status": map[string]any{"state": "succeeded", "outputAssetId": "out-1", "download": nil},
+		},
+	}
+	created, err := testClient(t, mux).CreateJob(context.Background(), OpUpscale, FromAsset("asset-1"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.Cached {
+		t.Fatal("a 200 from an api that predates the cached flag is still a cache hit")
+	}
+}

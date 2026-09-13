@@ -179,6 +179,62 @@ Two shapes to know:
   the write. The job then reports `Download == nil`, and `Run` returns `Downloaded: false`
   rather than an error.
 
+## Usage and credits
+
+`GetUsage` reports what the account has actually spent — jobs, credits, cache hits, deliveries
+and embedded-editor sessions — bucketed along one dimension at a time.
+
+```go
+report, err := client.GetUsage(ctx, &snapnedit.UsageQuery{
+    From:    time.Now().AddDate(0, 0, -7),
+    GroupBy: snapnedit.GroupByOperation,     // or Day, Key, Origin, Source
+    Source:  snapnedit.SourceAPI,            // plus KeyID / Origin / Operation filters
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(report.Range.From, "→", report.Range.To)
+fmt.Println(report.Totals.Jobs, "jobs,", report.Totals.Credits, "credits")
+fmt.Println(report.Totals.CacheHits, "of them ran no model")
+
+for _, point := range report.Series {        // busiest first (oldest first for GroupByDay)
+    fmt.Printf("%-24s %3d jobs %3d credits\n", point.Label, point.Jobs, point.Credits)
+}
+for _, key := range report.Keys {            // today's spend against each key's cap
+    fmt.Printf("%s (%s): %d used today\n", key.Name, key.Kind, key.UsedToday)
+}
+
+today := report.Point(time.Now().UTC().Format("2006-01-02"))  // one bucket, or nil
+_ = today
+```
+
+A nil query is the last 30 days grouped by day. `GroupByDay` is zero-filled across the whole
+range so a chart has a point per day; every other grouping comes back busiest first.
+`Totals.Jobs` counts **requests** — a cache hit is a job too — while `Totals.Credits` is what
+was actually debited, so a free operation, a cache hit and a website job each contribute `0`.
+A range wider than 366 days is a `CodeInvalidInput`.
+
+`From` and `To` are sent as UTC instants, so to cover a whole UTC day name its first
+millisecond and its last. An embed token may read its own numbers: the API scopes the report
+to that token's key and omits the key roster, so `report.Keys` comes back empty.
+
+### What a job cost
+
+Every job — created, polled or run — also reports its own billing facts, so a caller need
+not go back to `/usage` for a single job:
+
+```go
+created, _ := client.CreateJob(ctx, snapnedit.OpUpscale, snapnedit.FromAsset(assetID), nil)
+
+created.CreditCost   // 2 — 0 for a free operation, a cache hit or an unmetered caller
+created.Cached       // served from the result cache rather than by running a model, never billed
+created.DeliveryOnly // a job that only delivers an already-cached result somewhere new
+```
+
+A cache hit records its **own** job row, so `created.JobID` is a new id sharing the earlier
+job's `OutputAssetID` — never assert that the two ids match.
+
 ## Webhooks
 
 Register endpoint URLs and snapnedit POSTs a signed delivery every time one of your jobs
@@ -283,7 +339,7 @@ SNAPNEDIT_CONFORMANCE=1 go test ./... -run Conformance -v   # the language-neutr
 
 The conformance suite spawns the snapnedit monorepo's own server
 (`node scripts/conformance-server.mjs`, the real API and the real worker over an in-memory
-store), runs all 24 scenarios from `test/conformance/scenarios.json` as subtests named by their
+store), runs all 25 scenarios from `test/conformance/scenarios.json` as subtests named by their
 ids, and fails if the file gains a scenario this client has not implemented. It needs the
 monorepo alongside; set `SNAPNEDIT_REPO_ROOT` if it is not an ancestor of this directory.
 

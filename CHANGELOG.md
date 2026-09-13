@@ -6,6 +6,22 @@ All notable changes to the snapnedit Go SDK are documented here. The format foll
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-13
+
+### Added
+
+- `Client.GetUsage` (`GET /usage`): jobs, credits, cache hits, deliveries and
+  embedded-editor sessions over a date range, bucketed by day, key, origin, operation or
+  source.
+- `UsageQuery` (`time.Time` range ends plus `KeyID` / `Origin` / `Operation` / `Source`
+  filters), `UsageReport` with `Point`, `UsageRange`, `UsageFacts`, `UsageTotals`,
+  `UsageSeriesPoint`, `UsageKeyRow`, the `UsageGroupBy`, `UsageSource` and `APIKeyKind`
+  types with their constants, and `UsageUnattributed`.
+- `CreditCost`, `Cached` and `DeliveryOnly` on `Job` and `CreateJobResult`, read from the
+  job responses. `CreateJobResult.Cached` now prefers the API's own `cached` flag, falling
+  back to "the API answered 200" for an older deployment.
+- `usage.query` in the conformance suite, now 25 scenarios.
+
 ## [0.1.0] - 2026-09-13
 
 First release. Standard library only — no dependencies.
@@ -33,8 +49,9 @@ First release. Standard library only — no dependencies.
   idempotent requests only.
 - `webhooks` subpackage: `Verify`, `Valid`, `ConstructEvent`, `Sign`, `SignatureHeaderValue`,
   `WithTolerance`, `WithNow`, and typed `Event` / `EventData` shapes.
-- Conformance suite covering all 24 scenarios in the monorepo's
+- Conformance suite covering every scenario in the monorepo's
   `test/conformance/scenarios.json`, gated behind `SNAPNEDIT_CONFORMANCE=1`.
 
-[Unreleased]: https://github.com/Snap-N-Edit/sdk-go/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Snap-N-Edit/sdk-go/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Snap-N-Edit/sdk-go/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Snap-N-Edit/sdk-go/releases/tag/v0.1.0

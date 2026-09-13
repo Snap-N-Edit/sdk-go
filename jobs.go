@@ -146,6 +146,15 @@ type Job struct {
 	Destination *JobDestinationSummary `json:"destination"`
 	// Delivery records how that delivery went, or nil when there is none.
 	Delivery *JobDelivery `json:"delivery"`
+	// CreditCost is what this job was billed. 0 for a free operation, a cache
+	// hit, or an unmetered caller.
+	CreditCost int `json:"creditCost"`
+	// Cached reports that the result came from the result cache rather than
+	// from running a provider. A cache hit is never billed.
+	Cached bool `json:"cached"`
+	// DeliveryOnly marks a job that exists only to deliver an already-cached
+	// result to a new destination.
+	DeliveryOnly bool `json:"deliveryOnly"`
 }
 
 // Settled reports whether there is nothing left to wait for: the job is
@@ -221,15 +230,32 @@ type CreateJobResult struct {
 	Destination *JobDestinationSummary `json:"destination"`
 	// Delivery records how that delivery went, or nil when there is none.
 	Delivery *JobDelivery `json:"delivery"`
-	// Cached reports that the API answered 200 from its result cache rather
-	// than 202 for a newly queued job. A cache hit is never billed.
-	Cached bool `json:"-"`
+	// CreditCost is what this request was billed. 0 for a free operation, a
+	// cache hit, or an unmetered caller.
+	CreditCost int `json:"creditCost"`
+	// Cached reports that the result came from the API's cache rather than
+	// from running a provider — a 200 instead of a 202 — and was not billed.
+	//
+	// A cache hit still records its OWN job row, so JobID is a NEW id sharing
+	// the earlier job's OutputAssetID. Never assert that the two ids match.
+	Cached bool `json:"cached"`
+	// DeliveryOnly marks a job that exists only to deliver an already-cached
+	// result to a new destination.
+	DeliveryOnly bool `json:"deliveryOnly"`
 }
 
 // Job re-assembles the status and the envelope into the same shape GET
 // /jobs/{id} returns.
 func (r *CreateJobResult) Job() *Job {
-	return &Job{JobStatus: r.Status, Input: r.Input, Destination: r.Destination, Delivery: r.Delivery}
+	return &Job{
+		JobStatus:    r.Status,
+		Input:        r.Input,
+		Destination:  r.Destination,
+		Delivery:     r.Delivery,
+		CreditCost:   r.CreditCost,
+		Cached:       r.Cached,
+		DeliveryOnly: r.DeliveryOnly,
+	}
 }
 
 // createJobBody is the wire body of POST /jobs. `destination` is a
@@ -301,7 +327,9 @@ func (c *Client) CreateJob(ctx context.Context, operation Operation, input Input
 	if err := json.Unmarshal(resp.body, &out); err != nil {
 		return nil, newError(CodeInternal, resp.status, err, "POST /jobs returned a body this client could not parse")
 	}
-	out.Cached = resp.status == http.StatusOK
+	// A 200 IS the cache hit, whatever the body says: the status code is the
+	// older, narrower signal and an API that predates `cached` sends only it.
+	out.Cached = out.Cached || resp.status == http.StatusOK
 	return &out, nil
 }
 
