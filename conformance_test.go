@@ -1573,7 +1573,7 @@ func TestConformance(t *testing.T) {
 			mimes = append(mimes, mime)
 		}
 		sort.Strings(mimes)
-		if strings.Join(mimes, ",") != "image/jpeg,image/png,image/webp" {
+		if strings.Join(mimes, ",") != "image/avif,image/heic,image/heif,image/jpeg,image/png,image/webp" {
 			t.Fatalf("accepted mimes = %v", mimes)
 		}
 
