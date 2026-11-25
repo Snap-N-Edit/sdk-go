@@ -6,6 +6,27 @@ All notable changes to the snapnedit Go SDK are documented here. The format foll
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
+### Added
+
+- `Client.GetAccount` (`GET /account`): account id, email, plan, credit balance and the
+  calling key's id and mode, with `Account`, `AccountKey` and the `KeyMode` type
+  (`KeyModeLive`, `KeyModeTest`).
+- `Client.ListJobs` (`GET /jobs?limit=N`): the newest jobs first, filtered by
+  `ListJobsQuery{Limit, State, Priority}`, returning `JobListItem` (a `Job` plus `JobID` and
+  `CreatedAt`). Adds the `JobPriority` type with `PriorityInteractive` / `PriorityBackground`.
+- `Client.WebhookEndpoints` service at `/webhook-endpoints`: `List`, `Create`, `SetActive`,
+  `Delete` and `RotateSecret`, with `WebhookEndpoint`, `WebhookEndpointInput` and
+  `WebhookEndpointCreated`.
+- `Test` on `Job`, `CreateJobResult` and `webhooks.JobEnvelope` — true for a job made with an
+  `sk_test_` key. Absent reads as `false`.
+- `webhooks.EventSessionEnded` (`session.ended`) and its fields on `webhooks.EventData`:
+  `SessionID`, `APIKeyID`, `Origin`, `EndUserID`, `StartedAt`, `EndedAt`, `Refreshes`, `Jobs`,
+  `Credits`.
+- `account.get`, `jobs.list`, `webhook-endpoints.crud` and `keys.test-mode` in the conformance
+  suite, now 29 scenarios; the harness reads `testApiKey` from the server's ready line.
+
 ## [0.1.1] - 2026-09-13
 
 ### Added
@@ -52,6 +73,7 @@ First release. Standard library only — no dependencies.
 - Conformance suite covering every scenario in the monorepo's
   `test/conformance/scenarios.json`, gated behind `SNAPNEDIT_CONFORMANCE=1`.
 
-[Unreleased]: https://github.com/Snap-N-Edit/sdk-go/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Snap-N-Edit/sdk-go/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Snap-N-Edit/sdk-go/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Snap-N-Edit/sdk-go/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Snap-N-Edit/sdk-go/releases/tag/v0.1.0

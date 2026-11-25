@@ -56,6 +56,8 @@ type EventType string
 const (
 	EventJobSucceeded EventType = "job.succeeded"
 	EventJobFailed    EventType = "job.failed"
+	// EventSessionEnded fires once an embed session's last token has expired.
+	EventSessionEnded EventType = "session.ended"
 )
 
 // Verification failures. Every one of them means "reject the delivery"; they
@@ -110,11 +112,16 @@ type JobEnvelope struct {
 		// Bucket is the bucket written to, for a saved destination.
 		Bucket string `json:"bucket,omitempty"`
 	} `json:"delivery"`
+	// Test marks a job created with an sk_test_ key (placeholder result, no
+	// charge). False when an older API omits it.
+	Test bool `json:"test"`
 }
 
 // EventData is the `data` object inside a delivery. Which fields are populated
 // depends on Status: a succeeded job carries OutputAssetID (and often
-// Download), a failed one carries ErrorCode and Message.
+// Download), a failed one carries ErrorCode and Message, and a
+// [EventSessionEnded] delivery (Status "ended") carries only the session
+// fields.
 //
 // A succeeded job with Delivery.Status "failed" is a real combination and not a
 // contradiction: the job ran fine, only the PUT into your bucket did not — the
@@ -135,6 +142,26 @@ type EventData struct {
 	ErrorCode string `json:"errorCode,omitempty"`
 	// Message is the human explanation for a failed job.
 	Message string `json:"message,omitempty"`
+
+	// The session.ended fields. A null in the payload reads as "".
+
+	// SessionID identifies the embed session.
+	SessionID string `json:"sessionId,omitempty"`
+	// APIKeyID is the publishable or secret key the session was minted with.
+	APIKeyID string `json:"apiKeyId,omitempty"`
+	// Origin is the host surface the editor was embedded in.
+	Origin string `json:"origin,omitempty"`
+	// EndUserID is the host's own id for the end user, when it named one.
+	EndUserID string `json:"endUserId,omitempty"`
+	// StartedAt and EndedAt are RFC 3339 timestamps.
+	StartedAt string `json:"startedAt,omitempty"`
+	EndedAt   string `json:"endedAt,omitempty"`
+	// Refreshes is how many times the session's token was re-minted.
+	Refreshes int `json:"refreshes,omitempty"`
+	// Jobs is how many jobs the session ran.
+	Jobs int `json:"jobs,omitempty"`
+	// Credits is what the session spent.
+	Credits int `json:"credits,omitempty"`
 }
 
 // Event is the full JSON body POSTed to a developer endpoint.

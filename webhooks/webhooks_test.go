@@ -175,3 +175,23 @@ func TestFailedEventShape(t *testing.T) {
 		t.Fatalf("delivery = %+v", event.Data.Delivery)
 	}
 }
+
+func TestConstructEventSessionEnded(t *testing.T) {
+	body := []byte(`{"id":"whd_1","type":"session.ended","created":1700000000,"data":{"status":"ended","sessionId":"s1","apiKeyId":"k1","origin":"https://app.example","endUserId":null,"startedAt":"2026-11-25T00:00:00Z","endedAt":"2026-11-25T01:00:00Z","refreshes":3,"jobs":2,"credits":4}}`)
+	event, err := ConstructEvent(body, SignatureHeaderValue(body, 1700000000, "s"), "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := event.Data
+	if event.Type != EventSessionEnded || d.Status != "ended" || d.SessionID != "s1" || d.EndUserID != "" || d.Refreshes != 3 || d.Jobs != 2 || d.Credits != 4 || d.Test {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
+func TestConstructEventUnknownTypeDoesNotFail(t *testing.T) {
+	body := []byte(`{"id":"whd_2","type":"future.thing","created":1700000000,"data":{"whatever":1}}`)
+	event, err := ConstructEvent(body, SignatureHeaderValue(body, 1700000000, "s"), "s")
+	if err != nil || event.Type != "future.thing" {
+		t.Fatalf("event = %+v, %v", event, err)
+	}
+}

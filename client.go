@@ -20,7 +20,7 @@ import (
 const DefaultBaseURL = "https://snapnedit.com/api"
 
 // Version is this SDK's version, sent in the User-Agent header.
-const Version = "0.1.1"
+const Version = "0.2.0"
 
 // maskParamKey is the params key mask-guided operations read their mask from.
 // It is pipeline plumbing rather than part of any operation's schema.
@@ -42,6 +42,8 @@ type Client struct {
 	Embed *EmbedService
 	// Designs composes and renders multi-layer designs server-side.
 	Designs *DesignsService
+	// WebhookEndpoints manages the account's webhook endpoints.
+	WebhookEndpoints *WebhookEndpointsService
 }
 
 // RetryConfig controls automatic retries. Only idempotent requests (GET, HEAD,
@@ -131,6 +133,7 @@ func NewClient(apiKey string, opts ...Option) *Client {
 	c.Destinations = &DestinationsService{client: c}
 	c.Embed = &EmbedService{client: c}
 	c.Designs = &DesignsService{client: c}
+	c.WebhookEndpoints = &WebhookEndpointsService{client: c}
 	return c
 }
 

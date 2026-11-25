@@ -155,6 +155,9 @@ type Job struct {
 	// DeliveryOnly marks a job that exists only to deliver an already-cached
 	// result to a new destination.
 	DeliveryOnly bool `json:"deliveryOnly"`
+	// Test marks a job created with an sk_test_ key: free, with a placeholder
+	// result rather than a model run. False when an older API omits it.
+	Test bool `json:"test"`
 }
 
 // Settled reports whether there is nothing left to wait for: the job is
@@ -242,6 +245,9 @@ type CreateJobResult struct {
 	// DeliveryOnly marks a job that exists only to deliver an already-cached
 	// result to a new destination.
 	DeliveryOnly bool `json:"deliveryOnly"`
+	// Test marks a job created with an sk_test_ key: free, with a placeholder
+	// result rather than a model run. False when an older API omits it.
+	Test bool `json:"test"`
 }
 
 // Job re-assembles the status and the envelope into the same shape GET
@@ -255,6 +261,7 @@ func (r *CreateJobResult) Job() *Job {
 		CreditCost:   r.CreditCost,
 		Cached:       r.Cached,
 		DeliveryOnly: r.DeliveryOnly,
+		Test:         r.Test,
 	}
 }
 

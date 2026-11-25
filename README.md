@@ -235,10 +235,44 @@ created.DeliveryOnly // a job that only delivers an already-cached result somewh
 A cache hit records its **own** job row, so `created.JobID` is a new id sharing the earlier
 job's `OutputAssetID` — never assert that the two ids match.
 
+## Account and job history
+
+```go
+me, err := client.GetAccount(ctx)       // GET /account — secret key only
+me.Credits                              // the live balance
+me.Key.Mode                             // snapnedit.KeyModeLive or KeyModeTest
+
+jobs, err := client.ListJobs(ctx, &snapnedit.ListJobsQuery{Limit: 50, State: snapnedit.JobFailed})
+for _, job := range jobs {              // newest first; nil query = the newest 20
+	fmt.Println(job.JobID, job.CreatedAt, job.State, job.CreditCost)
+}
+```
+
+### Test keys
+
+An `sk_test_` key runs jobs for free on placeholder results and never reads or writes the
+result cache. Every job it creates reports `Test: true` (on `CreateJobResult`, `Job`, list
+items and webhook payloads); an older API that omits the flag reads as `false`. A test key is
+capped at 50 jobs a day.
+
 ## Webhooks
 
 Register endpoint URLs and snapnedit POSTs a signed delivery every time one of your jobs
-finishes. Verify the raw body **before** parsing it:
+finishes, or an embed session ends. Manage them with a secret key:
+
+```go
+created, err := client.WebhookEndpoints.Create(ctx, snapnedit.WebhookEndpointInput{
+	URL: "https://example.com/hooks/snapnedit", // Events nil = all of them
+})
+created.Secret // shown here and on RotateSecret only — store it
+
+endpoints, err := client.WebhookEndpoints.List(ctx)
+_, err = client.WebhookEndpoints.SetActive(ctx, created.Endpoint.ID, false) // pause
+secret, err := client.WebhookEndpoints.RotateSecret(ctx, created.Endpoint.ID)
+err = client.WebhookEndpoints.Delete(ctx, created.Endpoint.ID)
+```
+
+Verify the raw body **before** parsing it:
 
 ```go
 import "github.com/Snap-N-Edit/sdk-go/webhooks"
@@ -261,6 +295,10 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		log.Println(event.Data.JobID, event.Data.OutputAssetID, event.Data.Download)
 	case webhooks.EventJobFailed:
 		log.Println(event.Data.JobID, event.Data.ErrorCode, event.Data.Message)
+	case webhooks.EventSessionEnded:
+		log.Println(event.Data.SessionID, event.Data.Jobs, event.Data.Credits)
+	default:
+		// a type this SDK version does not know yet: acknowledge and ignore
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -339,7 +377,7 @@ SNAPNEDIT_CONFORMANCE=1 go test ./... -run Conformance -v   # the language-neutr
 
 The conformance suite spawns the snapnedit monorepo's own server
 (`node scripts/conformance-server.mjs`, the real API and the real worker over an in-memory
-store), runs all 25 scenarios from `test/conformance/scenarios.json` as subtests named by their
+store), runs all 29 scenarios from `test/conformance/scenarios.json` as subtests named by their
 ids, and fails if the file gains a scenario this client has not implemented. It needs the
 monorepo alongside; set `SNAPNEDIT_REPO_ROOT` if it is not an ancestor of this directory.
 

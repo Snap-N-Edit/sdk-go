@@ -67,6 +67,7 @@ type scenarioDoc struct {
 type conformanceServer struct {
 	URL             string `json:"url"`
 	APIKey          string `json:"apiKey"`
+	TestAPIKey      string `json:"testApiKey"`
 	PublishableKey  string `json:"publishableKey"`
 	WebhookSecret   string `json:"webhookSecret"`
 	AccountID       string `json:"accountId"`
@@ -1769,6 +1770,237 @@ func TestConformance(t *testing.T) {
 		}
 		if !bytes.Equal(res.Body, committed) {
 			t.Fatal("the served document is not byte-identical to docs/openapi.json — run npm run openapi:export")
+		}
+	})
+
+	/* ---------------- account & partner surface ---------------- */
+
+	testSDK := NewClient(server.TestAPIKey, WithBaseURL(server.URL), WithRetry(RetryConfig{}))
+
+	s.scenario(t, "account.get", func(t *testing.T) {
+		ctx := context.Background()
+		me, err := s.sdk.GetAccount(ctx)
+		if err != nil {
+			t.Fatalf("GetAccount: %v", err)
+		}
+		if me.AccountID != s.server.AccountID {
+			t.Fatalf("accountId = %q, want %q", me.AccountID, s.server.AccountID)
+		}
+		if balance := s.balance(t); float64(me.Credits) != balance {
+			t.Fatalf("credits = %d, balance = %v", me.Credits, balance)
+		}
+		if me.Key.Mode != KeyModeLive || me.Key.ID == "" {
+			t.Fatalf("key = %+v", me.Key)
+		}
+		raw := s.api.get(t, "/account").Map(t)
+		if _, ok := raw["plan"].(string); !ok {
+			t.Fatalf("plan = %v", raw["plan"])
+		}
+		if email, present := raw["email"]; !present {
+			t.Fatal("email must be present")
+		} else if _, ok := email.(string); !ok && email != nil {
+			t.Fatalf("email = %v, want a string or null", email)
+		}
+
+		testMe, err := testSDK.GetAccount(ctx)
+		if err != nil {
+			t.Fatalf("GetAccount with the test key: %v", err)
+		}
+		if testMe.Key.Mode != KeyModeTest {
+			t.Fatalf("test key mode = %q", testMe.Key.Mode)
+		}
+
+		none := s.anon.get(t, "/account")
+		if none.Status != 401 || none.ErrorCode(t) != "unauthorized" {
+			t.Fatalf("no credential: %d %s", none.Status, none.Text())
+		}
+
+		minted, err := s.sdk.Embed.CreateSession(ctx, s.server.PublishableKey, "https://conformance.example")
+		if err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+		embed := NewClient(minted.Token, WithBaseURL(s.server.URL), WithRetry(RetryConfig{}))
+		if _, err := embed.GetAccount(ctx); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("GetAccount with an embed token = %v, want unauthorized", err)
+		}
+	})
+
+	s.scenario(t, "jobs.list", func(t *testing.T) {
+		ctx := context.Background()
+		assetID := s.uniqueUpload(t, "jobs-list")
+		for _, width := range []int{4, 5} {
+			created, err := s.sdk.CreateJob(ctx, OpResizeImage, FromAsset(assetID),
+				&CreateJobOptions{Params: ResizeImageParams{Width: width}})
+			if err != nil {
+				t.Fatalf("CreateJob width %d: %v", width, err)
+			}
+			if job := s.poll(t, created.JobID); job["state"] != "succeeded" {
+				t.Fatalf("job %s = %v", created.JobID, job)
+			}
+		}
+
+		list, err := s.sdk.ListJobs(ctx, &ListJobsQuery{Limit: 2})
+		if err != nil {
+			t.Fatalf("ListJobs: %v", err)
+		}
+		if len(list) != 2 {
+			t.Fatalf("len = %d, want 2", len(list))
+		}
+		var stamps []time.Time
+		for _, item := range list {
+			at, err := time.Parse(time.RFC3339Nano, item.CreatedAt)
+			if item.JobID == "" || err != nil || item.State == "" {
+				t.Fatalf("item = %+v (%v)", item, err)
+			}
+			stamps = append(stamps, at)
+		}
+		if stamps[0].Before(stamps[1]) {
+			t.Fatalf("not newest first: %v", stamps)
+		}
+		raw := s.api.get(t, "/jobs?limit=2")
+		jobs, _ := raw.Map(t)["jobs"].([]any)
+		for _, entry := range jobs {
+			item, _ := entry.(map[string]any)
+			for _, field := range []string{"input", "destination", "delivery", "creditCost", "cached", "deliveryOnly", "priority", "idempotencyKey", "test"} {
+				if _, present := item[field]; !present {
+					t.Fatalf("list item is missing %s: %v", field, item)
+				}
+			}
+		}
+
+		succeeded, err := s.sdk.ListJobs(ctx, &ListJobsQuery{Limit: 1, State: JobSucceeded})
+		if err != nil {
+			t.Fatalf("ListJobs status=succeeded: %v", err)
+		}
+		if len(succeeded) > 1 {
+			t.Fatalf("len = %d, want at most 1", len(succeeded))
+		}
+		for _, item := range succeeded {
+			if item.State != JobSucceeded {
+				t.Fatalf("state = %q", item.State)
+			}
+		}
+
+		// Limit 0 is the SDK's "default", so limit=0 goes out raw.
+		if _, err := s.sdk.ListJobs(ctx, &ListJobsQuery{Limit: 101}); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("limit 101 = %v, want invalid_input", err)
+		}
+		zero := s.api.get(t, "/jobs?limit=0")
+		if zero.Status != 400 || zero.ErrorCode(t) != "invalid_input" {
+			t.Fatalf("limit=0: %d %s", zero.Status, zero.Text())
+		}
+
+		count := s.api.get(t, "/jobs")
+		if count.Status != 200 {
+			t.Fatalf("GET /jobs: %d %s", count.Status, count.Text())
+		}
+		if keys := strings.Join(keysOf(count.Map(t)), ","); keys != "count,priority,status" {
+			t.Fatalf("count shape keys = %s", keys)
+		}
+		if res := s.anon.get(t, "/jobs?limit=1"); res.Status != 401 {
+			t.Fatalf("no credential: %d", res.Status)
+		}
+	})
+
+	s.scenario(t, "webhook-endpoints.crud", func(t *testing.T) {
+		ctx := context.Background()
+		created, err := s.sdk.WebhookEndpoints.Create(ctx, WebhookEndpointInput{URL: "https://hooks.conformance.example/x"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		endpoint, secret := created.Endpoint, created.Secret
+		want := []webhooks.EventType{webhooks.EventJobSucceeded, webhooks.EventJobFailed, webhooks.EventSessionEnded}
+		if fmt.Sprint(endpoint.Events) != fmt.Sprint(want) || !endpoint.Active || secret == "" ||
+			endpoint.ID == "" || endpoint.CreatedAt == "" || endpoint.UpdatedAt == "" {
+			t.Fatalf("created = %+v", created)
+		}
+
+		list, err := s.sdk.WebhookEndpoints.List(ctx)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		found := false
+		for _, e := range list {
+			found = found || e.ID == endpoint.ID
+		}
+		if !found {
+			t.Fatalf("%s not in %+v", endpoint.ID, list)
+		}
+		if strings.Contains(s.api.get(t, "/webhook-endpoints").Text(), secret) {
+			t.Fatal("the secret must never appear in a list")
+		}
+
+		paused, err := s.sdk.WebhookEndpoints.SetActive(ctx, endpoint.ID, false)
+		if err != nil || paused.Active {
+			t.Fatalf("SetActive = %+v, %v", paused, err)
+		}
+
+		rotated, err := s.sdk.WebhookEndpoints.RotateSecret(ctx, endpoint.ID)
+		if err != nil || rotated == "" || rotated == secret {
+			t.Fatalf("RotateSecret = %q, %v", rotated, err)
+		}
+
+		if err := s.sdk.WebhookEndpoints.Delete(ctx, endpoint.ID); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if err := s.sdk.WebhookEndpoints.Delete(ctx, endpoint.ID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("second Delete = %v, want not_found", err)
+		}
+
+		for _, bad := range []WebhookEndpointInput{
+			{URL: "http://hooks.conformance.example/x"},
+			{URL: "https://10.0.0.1/x"},
+			{URL: "https://hooks.conformance.example/x", Events: []webhooks.EventType{"job.done"}},
+		} {
+			if _, err := s.sdk.WebhookEndpoints.Create(ctx, bad); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("Create(%+v) = %v, want invalid_input", bad, err)
+			}
+		}
+		if res := s.anon.get(t, "/webhook-endpoints"); res.Status != 401 {
+			t.Fatalf("no credential: %d", res.Status)
+		}
+	})
+
+	s.scenario(t, "keys.test-mode", func(t *testing.T) {
+		ctx := context.Background()
+		before := s.balance(t)
+		input := FromAsset(s.uniqueUpload(t, "test-mode"))
+
+		first, err := testSDK.CreateJob(ctx, OpUpscale, input, nil)
+		if err != nil {
+			t.Fatalf("first test job: %v", err)
+		}
+		if first.CreditCost != 0 || first.Cached || !first.Test {
+			t.Fatalf("first = %+v", first)
+		}
+		done, err := testSDK.WaitForJob(ctx, first.JobID, &WaitOptions{PollInterval: 50 * time.Millisecond, Timeout: 30 * time.Second})
+		if err != nil {
+			t.Fatalf("WaitForJob: %v", err)
+		}
+		if done.State != JobSucceeded || !done.Test || done.Download == nil {
+			t.Fatalf("done = %+v", done)
+		}
+
+		second, err := testSDK.CreateJob(ctx, OpUpscale, input, nil)
+		if err != nil {
+			t.Fatalf("second test job: %v", err)
+		}
+		if second.Cached || !second.Test {
+			t.Fatalf("second = %+v (must not be a cache hit)", second)
+		}
+
+		live, err := s.sdk.CreateJob(ctx, OpUpscale, input, nil)
+		if err != nil {
+			t.Fatalf("live job: %v", err)
+		}
+		if live.Cached || live.Test || live.CreditCost != OpUpscale.CreditCost() {
+			t.Fatalf("live = %+v", live)
+		}
+		if job := s.poll(t, live.JobID); job["state"] != "succeeded" {
+			t.Fatalf("live job = %v", job)
+		}
+		if after := s.balance(t); after != before-float64(live.CreditCost) {
+			t.Fatalf("balance %v -> %v, want a drop of exactly %d", before, after, live.CreditCost)
 		}
 	})
 
